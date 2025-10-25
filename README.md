@@ -91,6 +91,17 @@ python -m pytest
 
 The suite covers the Filmulator engine, parameter mapping, GUI helpers (where practical), and the LLM/voice adapters. Add new tests alongside any substantial code changes to keep the feedback loop fast.
 
+## Open Source Credits
+
+- **PyTorch** and **torchvision** (BSD-style licenses) power CLIP feature extraction and tensor transforms.
+- **OpenCLIP** (MIT) supplies the ViT-B/32 model weights and preprocessing used by the fingerprint extractor.
+- **NumPy** (BSD) and **Pillow** (PIL fork, HPND) handle pixel math, conversions, and file IO inside the Filmulator-inspired renderer.
+- **PyQt6** (LGPL) provides the UI toolkit for the desktop application.
+- **scikit-learn** (BSD) underpins lightweight helpers used during experimentation and normalization.
+- **Faster-Whisper** (MIT) delivers on-device transcription; **sounddevice** (MIT) and **webrtcvad** (BSD) support audio capture plus voice-activity detection.
+- **Ollama** (Apache-2.0) plus locally served Llama-family models enable natural-language feedback parsing.
+- The tone-mapping pipeline is inspired by the open-source **Filmulator** project (GPLv3); this code is a clean-room reimplementation of similar ideas around highlight/shadow handling and grain.
+
 ## Troubleshooting
 
 - **No images listed after onboarding**: the app only accepts `.jpg`, `.jpeg`, `.png`, or `.bmp`. Re-run “Load Inputs” from the main toolbar if you skipped the first dialog.
