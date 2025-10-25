@@ -1,0 +1,49 @@
+from src.llm_adapter import _extract_actions, _normalize_parameter_update
+
+
+def test_extract_actions_with_update_and_response():
+    output = """
+    ```json
+    {
+      "actions": [
+        {
+          "type": "update_parameters",
+          "parameters": {
+            "saturation_delta": 25,
+            "rotation": 180,
+            "grayscale": false
+          }
+        },
+        {
+          "type": "respond",
+          "message": "Applying rotation and saturation increase"
+        }
+      ]
+    }
+    ```
+    """
+
+    parsed = _extract_actions(output)
+    assert parsed is not None
+    assert parsed["saturation_delta"] == 25
+    assert parsed["rotation"] == 180
+    assert parsed["grayscale"] is False
+    assert parsed["messages"] == ["Applying rotation and saturation increase"]
+
+
+def test_normalize_parameter_update_filters_and_converts():
+    raw = {
+        "saturation_delta": "40",
+        "strength_delta": 20,
+        "rotation": "90",
+        "flip_horizontal": 1,
+        "unknown": 123,
+    }
+
+    normalized = _normalize_parameter_update(raw)
+    assert normalized == {
+        "saturation_delta": 40.0,
+        "strength_delta": 20.0,
+        "rotation": 90,
+        "flip_horizontal": True,
+    }

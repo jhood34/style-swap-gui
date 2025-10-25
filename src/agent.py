@@ -1,0 +1,151 @@
+"""Simple style transfer agent."""
+
+from __future__ import annotations
+
+import shlex
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple
+
+from .fingerprint import FingerprintExtractor, StyleFingerprint
+from .filmulator_engine import FilmulatorParameters
+from .transformer import apply_style_to_path
+from .interaction import interpret_feedback
+from .voice_transcriber import FasterWhisperTranscriber, TranscriptionError
+
+
+@dataclass
+class AgentConfig:
+    reference_dir: Path
+    input_dir: Path
+    output_dir: Path
+    device: str | None = None
+    interactive: bool = False
+
+
+class StyleTransferAgent:
+    def __init__(self, config: AgentConfig) -> None:
+        self.config = config
+        self.extractor = FingerprintExtractor(device=config.device)
+        self._voice_transcriber: FasterWhisperTranscriber | None = None
+
+    def _gather_reference_images(self) -> List[Path]:
+        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
+        paths = sorted(
+            path
+            for ext in patterns
+            for path in self.config.reference_dir.glob(ext)
+        )
+        if not paths:
+            raise ValueError(f"No reference images found in {self.config.reference_dir}")
+        return paths
+
+    def _fingerprint(self) -> StyleFingerprint:
+        references = self._gather_reference_images()
+        return self.extractor.compute(references)
+
+    def _gather_inputs(self) -> List[Path]:
+        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
+        paths = sorted(
+            path
+            for ext in patterns
+            for path in self.config.input_dir.glob(ext)
+        )
+        if not paths:
+            raise ValueError(f"No input images found in {self.config.input_dir}")
+        return paths
+
+    def _process(self, fingerprint: StyleFingerprint, params: FilmulatorParameters) -> List[Path]:
+        inputs = self._gather_inputs()
+        outputs: List[Path] = []
+        for path in inputs:
+            output_path = self.config.output_dir / path.name
+            apply_style_to_path(path, output_path, fingerprint, params=params)
+            outputs.append(output_path)
+        return outputs
+
+    @staticmethod
+    def _describe(params: FilmulatorParameters) -> str:
+        return (
+            f"strength={params.strength:.2f}, sat={params.saturation_scale:.2f}, "
+            f"brightness={params.brightness_shift:.2f}, shadows={params.shadow_lift:.2f}, "
+            f"highlights={params.highlight_compress:.2f}, contrast={params.contrast:.2f}, "
+            f"clarity={params.clarity:.2f}, temp={params.color_temperature:.2f}, "
+            f"grain={params.grain_strength:.2f}"
+        )
+
+    def run(self) -> List[Path]:
+        fingerprint = self._fingerprint()
+        params = FilmulatorParameters()
+        outputs = self._process(fingerprint, params)
+        print(f"Applied {self._describe(params)}")
+
+        if not self.config.interactive:
+            return outputs
+
+        prompt = (
+            "Feedback (Enter to accept, examples: 'more like reference', 'bring up the shadows', 'add grain', "
+            "'reset', or ':voice path/to/audio.m4a'): "
+        )
+
+        while True:
+            raw_feedback = input(prompt)
+            try:
+                feedback, used_voice = self._maybe_transcribe_voice_feedback(raw_feedback)
+            except TranscriptionError as exc:
+                print(f"Voice input error: {exc}")
+                continue
+            if used_voice:
+                print(f"Voice input → \"{feedback}\"")
+            feedback = feedback.strip()
+            updated, changed, messages = interpret_feedback(feedback, params)
+            if not feedback or feedback.lower() in {"ok", "okay", "looks good", "good", "done"}:
+                break
+            if not changed:
+                print("Could not interpret feedback; please try phrasing differently or type Enter to finish.")
+                continue
+            for msg in messages:
+                print(msg)
+            params = updated
+            print(f"Re-applying style with {self._describe(params)}")
+            outputs = self._process(fingerprint, params)
+
+        return outputs
+
+    # ------------------------------------------------------------------
+    def _ensure_voice_transcriber(self) -> FasterWhisperTranscriber:
+        if self._voice_transcriber is None:
+            self._voice_transcriber = FasterWhisperTranscriber()
+        return self._voice_transcriber
+
+    def _maybe_transcribe_voice_feedback(self, feedback: str) -> Tuple[str, bool]:
+        """Decode ':voice <path>' style commands into text feedback when present."""
+
+        text = feedback.strip()
+        if not text:
+            return feedback, False
+
+        try:
+            parts = shlex.split(text)
+        except ValueError:
+            return feedback, False
+
+        if not parts:
+            return feedback, False
+
+        command = parts[0].lstrip(":").lower()
+        if command not in {"voice", "audio"}:
+            return feedback, False
+
+        if len(parts) < 2:
+            raise TranscriptionError("Voice command requires a file path, e.g. ':voice samples/note.m4a'.")
+
+        audio_path = Path(" ".join(parts[1:])).expanduser()
+        if not audio_path.exists():
+            raise TranscriptionError(f"Audio file not found: {audio_path}")
+
+        transcript = self._ensure_voice_transcriber().transcribe_text(audio_path)
+        if not transcript:
+            raise TranscriptionError("Voice transcription produced empty text.")
+
+        return transcript, True

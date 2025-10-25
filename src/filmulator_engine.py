@@ -1,0 +1,204 @@
+"""Filmulator-inspired processing engine providing richer tone and film effects.
+
+This module is an original, lightweight approximation of ideas from the Filmulator
+project (see https://filmulator.org/). It does not reuse Filmulator's source code
+but references its emphasis on film-like tone mapping, highlight/shadow handling,
+and grain simulation.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Tuple
+
+import numpy as np
+from PIL import Image, ImageOps
+
+from .fingerprint import StyleFingerprint
+
+
+@dataclass
+class FilmulatorParameters:
+    """User-facing control values. All floats live on a [-100, 100] scale, 0 = neutral."""
+
+    strength: float = 0.0
+    saturation_scale: float = 0.0
+    brightness_shift: float = 0.0
+    shadow_lift: float = 0.0       # negative darkens, positive lifts shadows
+    highlight_compress: float = 0.0  # negative boosts highlights, positive compresses
+    contrast: float = 0.0
+    clarity: float = 0.0
+    grain_strength: float = 0.0
+    color_temperature: float = 0.0  # negative cools, positive warms
+    grayscale: bool = False
+    rotation_degrees: int = 0
+    flip_horizontal: bool = False
+    flip_vertical: bool = False
+
+
+class FilmulatorEngine:
+    eps = 1e-5
+
+    def __init__(self, fingerprint: StyleFingerprint) -> None:
+        self.fingerprint = fingerprint
+
+    def apply(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        rgb = image.convert("RGB")
+        array = np.asarray(rgb)
+        resolved = self._resolve_params(params)
+        base, matched = self._match_color_statistics(array, resolved)
+        blended = self._blend(base, matched, resolved)
+        toned = self._apply_tone_controls(blended, resolved)
+        coloured = self._apply_color_temperature(toned, resolved)
+        if resolved.grayscale:
+            coloured = ImageOps.grayscale(coloured).convert("RGB")
+        textured = self._apply_grain(coloured, resolved)
+        transformed = self._apply_geometry(textured, resolved)
+        return transformed
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _resolve_params(params: FilmulatorParameters) -> FilmulatorParameters:
+        """Convert [-100, 100] control values into runtime-friendly numbers."""
+
+        resolved = replace(params)
+        resolved.strength = FilmulatorEngine._map_control(params.strength, base=1.0, minimum=0.0, maximum=2.0)
+        resolved.saturation_scale = FilmulatorEngine._map_control(
+            params.saturation_scale, base=1.0, minimum=0.2, maximum=2.5
+        )
+        resolved.brightness_shift = FilmulatorEngine._map_control(
+            params.brightness_shift, base=0.0, minimum=-0.5, maximum=0.5
+        )
+        resolved.shadow_lift = FilmulatorEngine._map_control(params.shadow_lift, base=0.0, minimum=-1.0, maximum=1.0)
+        resolved.highlight_compress = FilmulatorEngine._map_control(
+            params.highlight_compress, base=0.0, minimum=-1.0, maximum=1.0
+        )
+        resolved.contrast = FilmulatorEngine._map_control(params.contrast, base=0.0, minimum=-1.0, maximum=1.0)
+        resolved.clarity = FilmulatorEngine._map_control(params.clarity, base=0.0, minimum=-1.0, maximum=1.0)
+        resolved.color_temperature = FilmulatorEngine._map_control(
+            params.color_temperature, base=0.0, minimum=-0.5, maximum=0.5
+        )
+        resolved.grain_strength = FilmulatorEngine._map_control(
+            params.grain_strength, base=0.0, minimum=0.0, maximum=1.0
+        )
+        return resolved
+
+    @staticmethod
+    def _map_control(value: float, *, base: float, minimum: float, maximum: float) -> float:
+        """Map a [-100, 100] control input onto the configured effect range."""
+
+        clamped = max(-100.0, min(100.0, float(value)))
+        if clamped >= 0:
+            return base + (maximum - base) * (clamped / 100.0)
+        return base - (base - minimum) * (-clamped / 100.0)
+
+    # ------------------------------------------------------------------
+    def _match_color_statistics(
+        self,
+        array: np.ndarray,
+        params: FilmulatorParameters,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        target = array.astype(np.float32) / 255.0
+        target_mean = target.mean(axis=(0, 1))
+        target_std = target.std(axis=(0, 1))
+
+        ref_mean = self.fingerprint.color_mean
+        ref_std = self.fingerprint.color_std * max(params.saturation_scale, 0.0)
+
+        matched = (target - target_mean) * (ref_std + self.eps) / (target_std + self.eps) + ref_mean
+        matched = np.clip(matched + params.brightness_shift, 0.0, 1.0)
+        return target, matched
+
+    def _blend(
+        self,
+        base: np.ndarray,
+        matched: np.ndarray,
+        params: FilmulatorParameters,
+    ) -> Image.Image:
+        strength = float(np.clip(params.strength, 0.0, 2.0))
+        if strength == 0.0:
+            primary = base
+        else:
+            delta = matched - base
+            primary = base + delta * strength
+        return Image.fromarray(np.clip(primary * 255.0, 0.0, 255.0).astype(np.uint8))
+
+    def _apply_tone_controls(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        if (
+            params.shadow_lift == 0.0
+            and params.highlight_compress == 0.0
+            and params.contrast == 0.0
+            and params.clarity == 0.0
+        ):
+            return image
+
+        arr = np.asarray(image).astype(np.float32) / 255.0
+        luminance = np.clip(
+            0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2],
+            0.0,
+            1.0,
+        )
+
+        if params.shadow_lift != 0.0:
+            shadow_mask = np.clip(0.5 - luminance, 0.0, 1.0)
+            if params.shadow_lift > 0.0:
+                luminance += params.shadow_lift * shadow_mask * (1.0 - luminance)
+            else:
+                luminance -= abs(params.shadow_lift) * shadow_mask * luminance
+
+        if params.highlight_compress != 0.0:
+            highlight_mask = np.clip(luminance - 0.5, 0.0, 1.0)
+            if params.highlight_compress > 0.0:
+                luminance += params.highlight_compress * highlight_mask * (1.0 - luminance)
+            else:
+                luminance -= abs(params.highlight_compress) * highlight_mask * luminance
+
+        if params.contrast != 0.0:
+            luminance = (luminance - 0.5) * (1.0 + params.contrast) + 0.5
+
+        luminance = np.clip(luminance, 0.0, 1.0)
+        ratio = luminance / (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2] + self.eps)
+        arr = np.clip(arr * ratio[..., None], 0.0, 1.0)
+
+        if params.clarity != 0.0:
+            from scipy.ndimage import gaussian_filter
+
+            blurred = gaussian_filter(arr, sigma=(0, 1.5, 0))
+            highpass = arr - blurred
+            arr = np.clip(arr + params.clarity * highpass, 0.0, 1.0)
+
+        return Image.fromarray((arr * 255.0).astype(np.uint8))
+
+    def _apply_color_temperature(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        if params.color_temperature == 0.0:
+            return image
+        arr = np.asarray(image).astype(np.float32) / 255.0
+        shift = params.color_temperature
+        if shift > 0:
+            arr[..., 0] *= 1 + shift
+            arr[..., 2] *= 1 - min(shift, 1.0)
+        else:
+            arr[..., 0] *= 1 + shift
+            arr[..., 2] *= 1 - shift
+        arr = np.clip(arr, 0.0, 1.0)
+        return Image.fromarray((arr * 255.0).astype(np.uint8))
+
+    def _apply_grain(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        if params.grain_strength <= 0.0:
+            return image
+        arr = np.asarray(image).astype(np.float32) / 255.0
+        rng = np.random.default_rng()
+        noise = rng.normal(0.0, params.grain_strength * 0.05, size=arr.shape)
+        arr = np.clip(arr + noise, 0.0, 1.0)
+        return Image.fromarray((arr * 255.0).astype(np.uint8))
+
+    def _apply_geometry(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        result = image
+        if params.flip_horizontal:
+            result = result.transpose(Image.FLIP_LEFT_RIGHT)
+        if params.flip_vertical:
+            result = result.transpose(Image.FLIP_TOP_BOTTOM)
+        rotation = params.rotation_degrees % 360
+        if rotation:
+            result = result.rotate(-rotation, expand=True)
+        return result

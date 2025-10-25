@@ -1,0 +1,141 @@
+"""Utility session for driving the style-transfer pipeline programmatically."""
+
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, List
+
+from .agent import AgentConfig
+from .fingerprint import FingerprintExtractor, StyleFingerprint
+from .filmulator_engine import FilmulatorParameters
+from .interaction import interpret_feedback
+from .transformer import apply_style_to_path
+
+
+@dataclass
+class StylisedImage:
+    input_path: Path
+    output_path: Path
+
+
+class StyleTransferSession:
+    """High-level API for styling images and applying iterative feedback."""
+
+    def __init__(
+        self,
+        reference_dir: Path,
+        input_dir: Path,
+        output_dir: Path,
+        device: str | None = None,
+    ) -> None:
+        self.config = AgentConfig(
+            reference_dir=reference_dir,
+            input_dir=input_dir,
+            output_dir=output_dir,
+            device=device,
+            interactive=False,
+        )
+        self.output_dir = output_dir
+        self.extractor = FingerprintExtractor(device=device)
+        self._fingerprint: StyleFingerprint | None = None
+        self._image_params: dict[Path, FilmulatorParameters] = {}
+
+    # ------------------------------------------------------------------
+    def list_inputs(self) -> List[Path]:
+        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
+        paths = sorted(
+            path
+            for ext in patterns
+            for path in self.config.input_dir.glob(ext)
+        )
+        if not paths:
+            raise ValueError(f"No input images found in {self.config.input_dir}")
+        return paths
+
+    def _gather_reference_images(self) -> list[Path]:
+        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
+        return sorted(
+            path
+            for ext in patterns
+            for path in self.config.reference_dir.glob(ext)
+        )
+
+    def fingerprint(self) -> StyleFingerprint:
+        if self._fingerprint is None:
+            references = self._gather_reference_images()
+            if not references:
+                raise ValueError(f"No reference images found in {self.config.reference_dir}")
+            self._fingerprint = self.extractor.compute(references)
+        return self._fingerprint
+
+    def _params_for(self, input_path: Path) -> FilmulatorParameters:
+        return self._image_params.setdefault(input_path, FilmulatorParameters())
+
+    def stylise_image(self, input_path: Path) -> Path:
+        output_path = self.output_dir / input_path.name
+        try:
+            fingerprint = self.fingerprint()
+        except ValueError:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(input_path, output_path)
+            return output_path
+        apply_style_to_path(input_path, output_path, fingerprint, params=self._params_for(input_path))
+        return output_path
+
+    def stylise_all(self) -> List[StylisedImage]:
+        results: List[StylisedImage] = []
+        for path in self.list_inputs():
+            results.append(StylisedImage(path, self.stylise_image(path)))
+        return results
+
+    def reset_parameters(self) -> None:
+        for key in list(self._image_params.keys()):
+            self._image_params[key] = FilmulatorParameters()
+
+    def refresh_fingerprint(self) -> None:
+        references = self._gather_reference_images()
+        if not references:
+            raise ValueError(f"No reference images found in {self.config.reference_dir}")
+        self._fingerprint = self.extractor.compute(references)
+
+    def has_references(self) -> bool:
+        return bool(self._gather_reference_images())
+
+    def has_fingerprint(self) -> bool:
+        return self._fingerprint is not None
+
+    # Cleanup -----------------------------------------------------------
+    def cleanup_assets(self) -> None:
+        for directory in (
+            self.config.reference_dir,
+            self.config.input_dir,
+            self.output_dir,
+        ):
+            self._remove_files(directory.iterdir())
+
+    @staticmethod
+    def _remove_files(paths: Iterable[Path]) -> None:
+        for path in paths:
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink(missing_ok=True)
+            except Exception:
+                continue
+
+    def apply_feedback(self, feedback: str, input_path: Path) -> tuple[bool, list[str]]:
+        params = self._params_for(input_path)
+        updated, changed, messages = interpret_feedback(feedback, params)
+        if changed:
+            self._image_params[input_path] = updated
+        return changed, messages
+
+    def set_parameter(self, input_path: Path, name: str, value: float) -> None:
+        params = self._params_for(input_path)
+        if isinstance(value, (int, float)):
+            value = max(-100.0, min(100.0, float(value)))
+        setattr(params, name, value)
+
+    def current_parameters(self, input_path: Path) -> FilmulatorParameters:
+        return self._params_for(input_path)

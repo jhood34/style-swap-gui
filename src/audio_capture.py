@@ -1,0 +1,388 @@
+"""Microphone capture utilities for continuous voice commands."""
+
+from __future__ import annotations
+
+import queue
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Callable, Deque, Optional
+from pathlib import Path
+import wave
+
+import numpy as np
+
+from .voice_transcriber import FasterWhisperTranscriber, TranscriptionError
+
+try:  # pragma: no cover - exercised indirectly via GUI runtime
+    import sounddevice as sd  # type: ignore
+except ImportError:  # pragma: no cover - handled dynamically in start()
+    sd = None  # type: ignore
+
+try:  # pragma: no cover - optional dependency for VAD
+    import webrtcvad  # type: ignore
+except ImportError:  # pragma: no cover - handled dynamically in __init__
+    webrtcvad = None  # type: ignore
+
+
+class AudioCaptureError(RuntimeError):
+    """Raised when the microphone cannot be accessed."""
+
+
+def _default_stream_factory(**kwargs: Any):
+    if sd is None:
+        raise AudioCaptureError(
+            "sounddevice is required for voice mode. Install it with `pip install sounddevice`."
+        )
+    return sd.InputStream(**kwargs)
+
+
+@dataclass
+class VoiceCommandConfig:
+    sample_rate: int = 16_000
+    input_sample_rate: int | None = None
+    device: int | str | None = None
+    frame_ms: int = 30
+    silence_duration: float = 0.6
+    min_command_duration: float = 0.4
+    max_utterance_seconds: float = 8.0
+    pre_roll_seconds: float = 0.2
+    beam_size: int = 5
+    language: str = "en"
+    vad_aggressiveness: int = 2
+
+
+class VoiceCommandListener:
+    """Capture microphone audio, detect phrases with VAD, and emit transcripts."""
+
+    def __init__(
+        self,
+        *,
+        transcriber: FasterWhisperTranscriber,
+        on_transcript: Callable[[str], None],
+        on_error: Optional[Callable[[Exception], None]] = None,
+        config: VoiceCommandConfig | None = None,
+        stream_factory: Optional[Callable[..., Any]] = None,
+        time_provider: Optional[Callable[[], float]] = None,
+        vad_factory: Optional[Callable[[int], Any]] = None,
+        debug: bool = False,
+    ) -> None:
+        self.transcriber = transcriber
+        self.on_transcript = on_transcript
+        self.on_error = on_error
+        self.config = config or VoiceCommandConfig()
+        self._stream_factory = stream_factory or _default_stream_factory
+        self._time = time_provider or time.monotonic
+        self._debug = debug
+        self._input_rate: int | None = None
+        self._input_frame_samples: int | None = None
+        self._device = self.config.device
+
+        self._vad_factory = vad_factory or (lambda level: webrtcvad.Vad(level) if webrtcvad else None)
+        self._vad = self._vad_factory(self.config.vad_aggressiveness)
+        if self._vad is None:
+            raise AudioCaptureError("webrtcvad is required for voice mode. Install it with `pip install webrtcvad`.")
+
+        self._queue: queue.Queue[np.ndarray] = queue.Queue()
+        self._running = False
+        self._worker: Optional[threading.Thread] = None
+        self._stream = None
+
+        self._frame_samples = int(self.config.sample_rate * self.config.frame_ms / 1000)
+        if self._frame_samples <= 0:
+            raise AudioCaptureError("VoiceCommandConfig.frame_ms must be positive.")
+        self._frame_duration = self.config.frame_ms / 1000.0
+        self._silence_frames_required = max(
+            1, int((self.config.silence_duration * 1000) / self.config.frame_ms)
+        )
+        self._pre_roll_frame_limit = max(
+            1, int((self.config.pre_roll_seconds * 1000) / self.config.frame_ms)
+        )
+        self._min_command_samples = int(self.config.min_command_duration * self.config.sample_rate)
+        self._max_command_samples = int(self.config.max_utterance_seconds * self.config.sample_rate)
+
+        self._pre_roll: Deque[np.ndarray] = deque()
+        self._float_segments: list[np.ndarray] = []
+        self._int16_buffer = np.zeros(0, dtype=np.int16)
+        self._speaking = False
+        self._utter_start: float | None = None
+        self._last_voice_time: float | None = None
+        self._silence_frames = 0
+
+    # ------------------------------------------------------------------
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def start(self) -> None:
+        if self._running:
+            return
+
+        input_rate = self.config.input_sample_rate
+        device = self._device
+        if input_rate is None and sd is not None:
+            try:
+                device_info = sd.query_devices(device, "input") if device is not None else sd.query_devices(None, "input")
+                input_rate = int(device_info.get("default_samplerate") or self.config.sample_rate)
+            except Exception:
+                input_rate = self.config.sample_rate
+        if input_rate is None or input_rate <= 0:
+            input_rate = self.config.sample_rate
+
+        self._input_rate = int(input_rate)
+        self._input_frame_samples = max(1, int(self._input_rate * self.config.frame_ms / 1000))
+
+        stream_kwargs = {
+            "samplerate": self._input_rate,
+            "channels": 1,
+            "dtype": "float32",
+            "blocksize": self._input_frame_samples,
+            "callback": self._audio_callback,
+            "latency": "low",
+        }
+        if device is not None:
+            stream_kwargs["device"] = device
+
+        try:
+            self._stream = self._stream_factory(**stream_kwargs)
+        except AudioCaptureError:
+            raise
+        except Exception as exc:  # pragma: no cover - surfaced to user
+            raise AudioCaptureError(str(exc)) from exc
+
+        self._queue = queue.Queue()
+        self._pre_roll.clear()
+        self._float_segments.clear()
+        self._int16_buffer = np.zeros(0, dtype=np.int16)
+        self._speaking = False
+        self._utter_start = None
+        self._last_voice_time = None
+        self._silence_frames = 0
+        self._running = True
+
+        if hasattr(self._stream, "start"):
+            self._stream.start()
+
+        self._worker = threading.Thread(target=self._process_loop, daemon=True)
+        self._worker.start()
+
+    def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        if self._worker and self._worker.is_alive():
+            self._worker.join(timeout=1.0)
+        self._worker = None
+
+        if self._stream is not None:
+            try:
+                if hasattr(self._stream, "stop"):
+                    self._stream.stop()
+                if hasattr(self._stream, "close"):
+                    self._stream.close()
+            except Exception:
+                pass
+        self._stream = None
+        self._flush_buffer(force=True)
+
+    # ------------------------------------------------------------------
+    def _audio_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
+        del frames, time_info, status  # unused
+        if not self._running:
+            return
+        chunk = np.asarray(indata, dtype=np.float32)
+        if chunk.ndim > 1:
+            chunk = chunk.mean(axis=-1)
+        chunk = np.copy(chunk)
+        if self._input_rate and self._input_rate != self.config.sample_rate:
+            chunk = self._resample(chunk, self._input_rate, self.config.sample_rate)
+        self._queue.put(chunk)
+
+    def _process_loop(self) -> None:
+        while self._running:
+            try:
+                chunk = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                chunk = None
+            self._handle_chunk(chunk, self._now())
+
+        while not self._queue.empty():
+            self._handle_chunk(self._queue.get(), self._now())
+        self._handle_chunk(None, self._now())
+
+    def _handle_chunk(self, chunk: Optional[np.ndarray], timestamp: float) -> None:
+        if chunk is None:
+            if self._speaking and self._debug:
+                print("[voice-debug] forcing flush at stream end")
+            self._flush_buffer(force=True)
+            return
+
+        chunk = np.asarray(chunk, dtype=np.float32)
+        if chunk.ndim > 1:
+            chunk = chunk.mean(axis=-1)
+        if chunk.size == 0:
+            return
+        chunk_copy = chunk.copy()
+
+        self._append_pre_roll(chunk_copy)
+
+        pcm = np.clip(chunk * 32768.0, -32768.0, 32767.0).astype(np.int16)
+        self._int16_buffer = np.concatenate((self._int16_buffer, pcm))
+
+        frame_len = self._frame_samples
+        frame_time = timestamp
+        chunk_included = False
+
+        while self._int16_buffer.size >= frame_len:
+            frame = self._int16_buffer[:frame_len]
+            self._int16_buffer = self._int16_buffer[frame_len:]
+            voiced = bool(self._vad.is_speech(frame.tobytes(), self.config.sample_rate))
+
+            if voiced:
+                if not self._speaking:
+                    self._start_speech(frame_time)
+                    chunk_included = True
+                self._silence_frames = 0
+                self._last_voice_time = frame_time
+            else:
+                if self._speaking:
+                    self._silence_frames += 1
+                    if self._silence_frames >= self._silence_frames_required:
+                        self._flush_buffer()
+
+            if self._speaking and self._utter_start is not None:
+                if frame_time - self._utter_start >= self.config.max_utterance_seconds:
+                    self._flush_buffer(force=True)
+
+            frame_time += self._frame_duration
+
+        if self._speaking:
+            if not chunk_included:
+                self._float_segments.append(chunk)
+            self._float_segments.append(chunk_copy)
+            self._enforce_max_duration()
+        else:
+            self._trim_pre_roll()
+
+    # ------------------------------------------------------------------
+    def _start_speech(self, timestamp: float) -> None:
+        self._speaking = True
+        self._utter_start = timestamp
+        self._last_voice_time = timestamp
+        self._silence_frames = 0
+        self._float_segments = list(self._pre_roll)
+        self._pre_roll.clear()
+        if self._debug:
+            print("[voice-debug] speech started")
+
+    def _append_pre_roll(self, chunk: np.ndarray) -> None:
+        self._pre_roll.append(chunk)
+        # temporary cap; precise trim happens later
+        if len(self._pre_roll) > self._pre_roll_frame_limit * 4:
+            self._trim_pre_roll()
+
+    @staticmethod
+    def _resample(data: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+        if src_rate == dst_rate or data.size == 0:
+            return data.astype(np.float32, copy=False)
+        ratio = dst_rate / float(src_rate)
+        target_size = max(1, int(round(data.size * ratio)))
+        positions = np.linspace(0, data.size - 1, target_size)
+        resampled = np.interp(positions, np.arange(data.size), data.astype(np.float32))
+        return resampled.astype(np.float32, copy=False)
+
+    def _trim_pre_roll(self) -> None:
+        if not self._pre_roll:
+            return
+        max_samples = int(self.config.pre_roll_seconds * self.config.sample_rate)
+        total = sum(arr.shape[0] for arr in self._pre_roll)
+        while total > max_samples and self._pre_roll:
+            removed = self._pre_roll.popleft()
+            total -= removed.shape[0]
+
+    def _enforce_max_duration(self) -> None:
+        if not self._float_segments:
+            return
+        total_samples = sum(seg.shape[0] for seg in self._float_segments)
+        if total_samples <= self._max_command_samples:
+            return
+        concatenated = np.concatenate(self._float_segments)
+        concatenated = concatenated[-self._max_command_samples :]
+        self._float_segments = [concatenated]
+
+    def _flush_buffer(self, force: bool = False) -> None:
+        if not self._float_segments:
+            self._reset_state()
+            return
+
+        audio = np.concatenate(self._float_segments).astype(np.float32)
+        self._float_segments.clear()
+
+        if audio.size == 0:
+            self._reset_state()
+            return
+
+        if not force and audio.size < self._min_command_samples:
+            if self._debug:
+                print("[voice-debug] clip discarded (too short)")
+            self._reset_state()
+            return
+
+        if audio.size > self._max_command_samples:
+            audio = audio[-self._max_command_samples :]
+
+        if self._debug:
+            duration = audio.shape[0] / float(self.config.sample_rate)
+            print(f"[voice-debug] flushing duration={duration:.2f}s")
+            debug_dir = Path("outputs/voice_debug")
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = int(self._now() * 1000)
+            wav_path = debug_dir / f"clip_{timestamp}.wav"
+            pcm16 = np.clip(audio * 32767.0, -32768.0, 32767.0).astype(np.int16)
+            with wave.open(str(wav_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.config.sample_rate)
+                wf.writeframes(pcm16.tobytes())
+            print(f"[voice-debug] saved {wav_path}")
+
+        try:
+            transcript = self.transcriber.transcribe_text(
+                audio,
+                language=self.config.language,
+                beam_size=max(1, self.config.beam_size),
+                vad_filter=False,
+                temperature=0.2,
+                compression_ratio_threshold=2.4,
+                no_speech_threshold=0.2,
+                condition_on_previous_text=False,
+                without_timestamps=True,
+            ).strip()
+            if self._debug:
+                print(f"[voice-debug] transcript='{transcript}'")
+        except TranscriptionError as exc:
+            if self.on_error:
+                self.on_error(exc)
+            self._reset_state()
+            return
+
+        clean = "".join(ch for ch in transcript if ch.isalnum() or ch.isspace()).strip()
+        if clean:
+            self.on_transcript(transcript)
+        elif self._debug:
+            print("[voice-debug] ignored (no alphanumeric content)")
+
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        self._speaking = False
+        self._utter_start = None
+        self._last_voice_time = None
+        self._silence_frames = 0
+        self._float_segments.clear()
+        self._pre_roll.clear()
+        self._int16_buffer = np.zeros(0, dtype=np.int16)
+
+    def _now(self) -> float:
+        return float(self._time())

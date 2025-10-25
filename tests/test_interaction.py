@@ -1,0 +1,88 @@
+import pytest
+
+from src.filmulator_engine import FilmulatorParameters
+from src.interaction import interpret_feedback
+
+
+def _stub_llm(monkeypatch, payload):
+    monkeypatch.setattr(
+        "src.interaction.parse_feedback_with_llm",
+        lambda feedback: payload,
+    )
+
+
+def test_interpret_feedback_strength_increase(monkeypatch):
+    _stub_llm(monkeypatch, {"strength_delta": 20})
+    params = FilmulatorParameters()
+    updated, changed, messages = interpret_feedback("make it more like the reference", params)
+    assert changed
+    assert updated != params
+    assert messages == []
+
+
+def test_interpret_feedback_saturation_decrease(monkeypatch):
+    _stub_llm(monkeypatch, {"saturation_delta": -30})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("please make it less saturated", params)
+    assert changed
+    assert updated.saturation_scale < params.saturation_scale
+
+
+def test_interpret_feedback_black_and_white(monkeypatch):
+    _stub_llm(monkeypatch, {"grayscale": True})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("convert to black and white", params)
+    assert changed
+    assert updated.grayscale
+
+
+def test_interpret_feedback_rotate(monkeypatch):
+    _stub_llm(monkeypatch, {"rotation": 180})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("rotate the images 180 degrees", params)
+    assert changed
+    assert updated.rotation_degrees % 360 != params.rotation_degrees
+
+
+def test_interpret_feedback_brightness(monkeypatch):
+    _stub_llm(monkeypatch, {"brightness_delta": 10})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("make it a little brighter", params)
+    assert changed
+    assert updated.brightness_shift > params.brightness_shift
+
+
+def test_interpret_feedback_shadows_and_grain(monkeypatch):
+    _stub_llm(monkeypatch, {"shadow_delta": 20, "grain_strength": 80})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("bring up the shadows and add grain", params)
+    assert changed
+    assert updated.shadow_lift > params.shadow_lift
+    assert updated.grain_strength > params.grain_strength
+
+
+def test_interpret_feedback_darken_shadows(monkeypatch):
+    _stub_llm(monkeypatch, {"shadow_delta": -30})
+    params = FilmulatorParameters(shadow_lift=20.0)
+    updated, changed, _ = interpret_feedback("darken the shadows", params)
+    assert changed
+    assert updated.shadow_lift < params.shadow_lift
+
+
+def test_interpret_feedback_clarity_and_temperature(monkeypatch):
+    _stub_llm(monkeypatch, {"clarity_delta": 20, "temperature_delta": 30})
+    params = FilmulatorParameters()
+    updated, changed, _ = interpret_feedback("add clarity and make it warmer", params)
+    assert changed
+    assert updated.clarity > params.clarity
+    assert updated.color_temperature > params.color_temperature
+
+
+def test_interpret_feedback_acknowledge(monkeypatch):
+    _stub_llm(monkeypatch, {"messages": ["looks good"]})
+    params = FilmulatorParameters()
+    _stub_llm(monkeypatch, {"messages": ["All set"]})
+    updated, changed, messages = interpret_feedback("looks good", params)
+    assert not changed
+    assert updated == params
+    assert messages == ["All set"]

@@ -1,0 +1,142 @@
+import types
+from pathlib import Path
+
+import pytest
+
+from src.voice_transcriber import (
+    FasterWhisperTranscriber,
+    TranscriptionError,
+    TranscriptionResult,
+    suggest_device_settings,
+)
+
+
+class _DummySegment:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _DummyInfo:
+    def __init__(self, language: str | None = "en", duration: float | None = 0.42) -> None:
+        self.language = language
+        self.duration = duration
+        self.average_logprob = -0.1
+
+
+def test_transcribe_returns_clean_text(monkeypatch):
+    init_calls: list[dict] = []
+    transcribe_calls: list[dict] = []
+
+    class DummyModel:
+        def __init__(self, model_size: str, **kwargs) -> None:
+            init_calls.append({"model_size": model_size, "kwargs": kwargs})
+
+        def transcribe(self, audio, **kwargs):
+            transcribe_calls.append({"audio": audio, "kwargs": kwargs})
+            segments = [
+                _DummySegment(" Hello "),
+                _DummySegment("world!"),
+            ]
+            return iter(segments), _DummyInfo()
+
+    monkeypatch.setattr("src.voice_transcriber.WhisperModel", DummyModel)
+
+    transcriber = FasterWhisperTranscriber(model_size="tiny.en", device="cpu", compute_type="int8")
+    result = transcriber.transcribe(Path("sample.wav"))
+
+    assert isinstance(result, TranscriptionResult)
+    assert result.text == "Hello world!"
+    assert init_calls[0]["model_size"] == "tiny.en"
+    assert init_calls[0]["kwargs"]["device"] == "cpu"
+    assert transcribe_calls[0]["audio"] == "sample.wav"
+    assert result.language == "en"
+    assert pytest.approx(result.duration, rel=1e-5) == 0.42
+
+
+def test_model_is_instantiated_once(monkeypatch):
+    init_counter = {"count": 0}
+
+    class DummyModel:
+        def __init__(self, *args, **kwargs) -> None:
+            init_counter["count"] += 1
+
+        def transcribe(self, *args, **kwargs):
+            return iter([_DummySegment("hi")]), _DummyInfo()
+
+    monkeypatch.setattr("src.voice_transcriber.WhisperModel", DummyModel)
+
+    transcriber = FasterWhisperTranscriber(device="cpu", compute_type="int8")
+    transcriber.transcribe("clip.wav")
+    transcriber.transcribe("clip.wav")
+
+    assert init_counter["count"] == 1
+
+
+def test_transcription_error_is_wrapped(monkeypatch):
+    class DummyModel:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def transcribe(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("src.voice_transcriber.WhisperModel", DummyModel)
+
+    transcriber = FasterWhisperTranscriber(device="cpu", compute_type="int8")
+
+    with pytest.raises(TranscriptionError) as exc:
+        transcriber.transcribe("bad.wav")
+
+    assert "boom" in str(exc.value)
+
+
+def test_missing_library_raises_helpful_error(monkeypatch):
+    monkeypatch.setattr("src.voice_transcriber.WhisperModel", None)
+    transcriber = FasterWhisperTranscriber(device="cpu", compute_type="int8")
+    with pytest.raises(TranscriptionError):
+        transcriber.transcribe("anything.wav")
+
+
+def test_suggest_device_settings(monkeypatch):
+    monkeypatch.setattr("src.voice_transcriber._detect_device", lambda: ("cpu", "int8"))
+
+    device, compute_type = suggest_device_settings()
+    assert device == "cpu"
+    assert compute_type == "int8"
+
+    device, compute_type = suggest_device_settings(device="cpu")
+    assert device == "cpu"
+    assert compute_type == "int8"
+
+    device, compute_type = suggest_device_settings(compute_type="float16")
+    assert device == "cpu"
+    assert compute_type == "int8"
+
+    monkeypatch.setattr("src.voice_transcriber._detect_device", lambda: ("cuda", "float16"))
+    device, compute_type = suggest_device_settings()
+    assert device == "cuda"
+    assert compute_type == "float16"
+
+
+def test_transcriber_fallback_to_int8(monkeypatch):
+    attempts: list[dict] = []
+
+    class DummyModel:
+        def __init__(self, *args, **kwargs) -> None:
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise ValueError("float16 not supported")
+
+        def transcribe(self, *args, **kwargs):
+            return iter([_DummySegment("voice")]), _DummyInfo()
+
+    monkeypatch.setattr("src.voice_transcriber.WhisperModel", DummyModel)
+
+    transcriber = FasterWhisperTranscriber(device="auto", compute_type="float16")
+    text = transcriber.transcribe_text("clip.wav")
+
+    assert text == "voice"
+    assert attempts[0]["compute_type"] == "float16"
+    assert attempts[1]["compute_type"] == "int8"
+    assert transcriber.compute_type == "int8"
+    assert transcriber.device == "cpu"

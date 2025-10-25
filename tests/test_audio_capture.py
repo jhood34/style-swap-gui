@@ -1,0 +1,77 @@
+import numpy as np
+import pytest
+
+from src.audio_capture import AudioCaptureError, VoiceCommandConfig, VoiceCommandListener
+
+
+class _StubTranscriber:
+    def __init__(self, response: str = "test") -> None:
+        self.response = response
+        self.calls: list[dict] = []
+
+    def transcribe_text(self, audio, **kwargs):
+        self.calls.append({"audio": audio, "kwargs": kwargs})
+        return self.response
+
+
+class _SequenceVAD:
+    def __init__(self, sequence: list[bool]) -> None:
+        self.sequence = sequence
+        self.index = 0
+
+    def is_speech(self, frame: bytes, sample_rate: int) -> bool:  # noqa: ARG002
+        if not self.sequence:
+            return False
+        value = self.sequence[min(self.index, len(self.sequence) - 1)]
+        self.index += 1
+        return value
+
+
+def test_listener_requires_sounddevice(monkeypatch):
+    monkeypatch.setattr("src.audio_capture.sd", None)
+    listener = VoiceCommandListener(
+        transcriber=_StubTranscriber(),
+        on_transcript=lambda _: None,
+        vad_factory=lambda _: _SequenceVAD([True]),
+    )
+    with pytest.raises(AudioCaptureError):
+        listener.start()
+
+
+def test_handle_chunk_emits_transcript(monkeypatch):
+    outputs: list[str] = []
+    transcriber = _StubTranscriber(response="increase saturation")
+    config = VoiceCommandConfig(
+        sample_rate=16_000,
+        frame_ms=30,
+        silence_duration=0.2,
+        min_command_duration=0.05,
+        pre_roll_seconds=0.0,
+    )
+
+    voiced_frames = [True] * 8
+    silent_frames = [False] * 10
+    vad = _SequenceVAD(voiced_frames + silent_frames)
+
+    listener = VoiceCommandListener(
+        transcriber=transcriber,
+        on_transcript=outputs.append,
+        config=config,
+        vad_factory=lambda _: vad,
+    )
+
+    chunk_len = int(config.sample_rate * 0.24)  # ~8 frames at 30 ms each
+    voice_chunk = np.full(chunk_len, 0.1, dtype=np.float32)
+    silence_chunk = np.zeros(chunk_len, dtype=np.float32)
+
+    listener._handle_chunk(voice_chunk, 0.0)
+    listener._handle_chunk(silence_chunk, 0.5)
+
+    assert outputs == ["increase saturation"]
+    assert transcriber.calls
+    call = transcriber.calls[0]
+    audio = call["audio"]
+    assert isinstance(audio, np.ndarray)
+    assert audio.dtype == np.float32
+    assert call["kwargs"]["vad_filter"] is False
+    assert call["kwargs"]["temperature"] == 0.2

@@ -1,0 +1,10 @@
+open-clip-torch>=3.2.0
+torch>=2.1.0
+numpy>=1.24
+Pillow>=10.0
+scipy>=1.11
+PyQt6>=6.6
+pytest>=7.4
+faster-whisper>=1.0.0
+sounddevice>=0.5.3
+webrtcvad>=2.0.10
