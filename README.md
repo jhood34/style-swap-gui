@@ -93,14 +93,27 @@ The suite covers the Filmulator engine, parameter mapping, GUI helpers (where pr
 
 ## Open Source Credits
 
-- **PyTorch** and **torchvision** (BSD-style licenses) power CLIP feature extraction and tensor transforms.
-- **OpenCLIP** (MIT) supplies the ViT-B/32 model weights and preprocessing used by the fingerprint extractor.
-- **NumPy** (BSD) and **Pillow** (PIL fork, HPND) handle pixel math, conversions, and file IO inside the Filmulator-inspired renderer.
-- **PyQt6** (LGPL) provides the UI toolkit for the desktop application.
-- **scikit-learn** (BSD) underpins lightweight helpers used during experimentation and normalization.
-- **Faster-Whisper** (MIT) delivers on-device transcription; **sounddevice** (MIT) and **webrtcvad** (BSD) support audio capture plus voice-activity detection.
-- **Ollama** (Apache-2.0) plus locally served Llama-family models enable natural-language feedback parsing.
-- The tone-mapping pipeline is inspired by the open-source **Filmulator** project (GPLv3); this code is a clean-room reimplementation of similar ideas around highlight/shadow handling and grain.
+### Dependencies and Acknowledgments
+
+**Machine Learning & Computer Vision**
+- **[PyTorch](https://github.com/pytorch/pytorch)** (BSD-3-Clause) and **[torchvision](https://github.com/pytorch/vision)** (BSD-3-Clause): Deep learning framework powering CLIP feature extraction and tensor transformations.
+- **[OpenCLIP](https://github.com/mlfoundations/open_clip)** (MIT): Provides ViT-B/32 model weights and preprocessing pipeline for the semantic fingerprint extractor.
+- **[scikit-learn](https://github.com/scikit-learn/scikit-learn)** (BSD-3-Clause): Machine learning utilities supporting normalization and experimental feature engineering.
+
+**Image Processing**
+- **[NumPy](https://github.com/numpy/numpy)** (BSD-3-Clause): Array operations and numerical computations for pixel-level manipulation.
+- **[Pillow](https://github.com/python-pillow/Pillow)** (HPND): Image file I/O, format conversions, and basic transformations.
+- The tone-mapping pipeline draws inspiration from the open-source **[Filmulator](https://github.com/CarVac/filmulator-gui)** project (GPLv3). This implementation is a clean-room reimplementation employing similar highlight/shadow recovery techniques and grain simulation.
+
+**User Interface**
+- **[PyQt6](https://riverbankcomputing.com/software/pyqt/)** (GPL/Commercial): Cross-platform GUI framework for the desktop application.
+
+**Audio Processing & Natural Language**
+- **[Faster-Whisper](https://github.com/SYSTRAN/faster-whisper)** (MIT): Real-time speech-to-text transcription engine optimized for local inference.
+- **[sounddevice](https://github.com/spatialaudio/python-sounddevice)** (MIT): Low-latency audio capture from system microphones.
+- **[webrtcvad](https://github.com/wiseman/py-webrtcvad)** (MIT): Voice activity detection for intelligent audio segmentation.
+- **[Ollama](https://github.com/ollama/ollama)** (MIT): LLM serving infrastructure enabling local Llama-family models for natural language feedback parsing.
+
 
 ## Troubleshooting
 
