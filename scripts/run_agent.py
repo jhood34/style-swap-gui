@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Parse CLI flags, invoke the agent, and always clean up temporary folders."""
     args = parse_args()
     config = AgentConfig(
         reference_dir=args.references,

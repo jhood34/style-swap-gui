@@ -25,6 +25,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    """Entry point for launching the PyQt GUI and cleaning up temporary assets."""
     args = parse_args()
     session = StyleTransferSession(args.references, args.inputs, args.outputs, device=args.device)
     try:
