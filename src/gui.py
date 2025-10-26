@@ -234,6 +234,21 @@ class ImagePreviewWindow(QWidget):
         self.setPalette(palette)
 
 
+class FeedbackTextEdit(QTextEdit):
+    """QTextEdit that submits feedback when Enter/Return is pressed."""
+
+    submitted = pyqtSignal()
+
+    def keyPressEvent(self, event):  # pragma: no cover - GUI interaction
+        is_return = event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+        wants_submit = not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if is_return and wants_submit:
+            self.submitted.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class StyleTransferWindow(QMainWindow):
     def __init__(
         self,
@@ -282,9 +297,10 @@ class StyleTransferWindow(QMainWindow):
         self.styled_label.clicked.connect(lambda: self._toggle_preview(self.styled_label))
         self._preview_window: ImagePreviewWindow | None = None
 
-        self.feedback_edit = QTextEdit()
+        self.feedback_edit = FeedbackTextEdit()
         self.feedback_edit.setPlaceholderText("Describe adjustments, e.g. 'give it a sunset vibe'")
         self.feedback_edit.setFixedHeight(80)
+        self.feedback_edit.submitted.connect(self.apply_feedback)
 
         self.apply_button = QPushButton("Apply Feedback")
         self.apply_button.setObjectName("applyButton")
@@ -632,8 +648,6 @@ class StyleTransferWindow(QMainWindow):
             slider.blockSignals(False)
 
     def _schedule_restylise(self, input_path: Path, immediate: bool = False) -> None:
-        if not self.session.has_fingerprint():
-            return
         self._pending_input = input_path
         self.restylise_timer.stop()
         if immediate:
@@ -837,10 +851,6 @@ class StyleTransferWindow(QMainWindow):
         self._schedule_restylise(input_path, immediate=True)
 
     def restylise_all(self, initial: bool = False) -> None:
-        if not self.session.has_fingerprint():
-            if not initial:
-                QMessageBox.information(self, "Stylise", "Load reference images before styling inputs.")
-            return
         try:
             self.session.stylise_all()
         except Exception as exc:  # pragma: no cover - surfaced to user
@@ -887,10 +897,7 @@ class StyleTransferWindow(QMainWindow):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(src, dst)
         self._load_inputs()
-        if self.session.has_fingerprint():
-            self.restylise_all()
-        else:
-            QMessageBox.information(self, "Inputs", "Inputs loaded. Add reference images to apply the style.")
+        self.restylise_all(initial=True)
 
     def toggle_slider_panel(self) -> None:
         if self.slider_panel.isVisible():

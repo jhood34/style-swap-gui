@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List
@@ -41,6 +40,7 @@ class StyleTransferSession:
         self.extractor = FingerprintExtractor(device=device)
         self._fingerprint: StyleFingerprint | None = None
         self._image_params: dict[Path, FilmulatorParameters] = {}
+        self._fallback_fingerprints: dict[Path, StyleFingerprint] = {}
 
     # ------------------------------------------------------------------
     def list_inputs(self) -> List[Path]:
@@ -69,6 +69,7 @@ class StyleTransferSession:
             if not references:
                 raise ValueError(f"No reference images found in {self.config.reference_dir}")
             self._fingerprint = self.extractor.compute(references)
+            self._fallback_fingerprints.clear()
         return self._fingerprint
 
     def _params_for(self, input_path: Path) -> FilmulatorParameters:
@@ -79,10 +80,10 @@ class StyleTransferSession:
         try:
             fingerprint = self.fingerprint()
         except ValueError:
-            # No references yet? Return a copy so the UI still shows something.
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(input_path, output_path)
-            return output_path
+            fingerprint = self._fallback_fingerprints.get(input_path)
+            if fingerprint is None:
+                fingerprint = self.extractor.compute([input_path])
+                self._fallback_fingerprints[input_path] = fingerprint
         apply_style_to_path(input_path, output_path, fingerprint, params=self._params_for(input_path))
         return output_path
 
@@ -103,12 +104,13 @@ class StyleTransferSession:
         if not references:
             raise ValueError(f"No reference images found in {self.config.reference_dir}")
         self._fingerprint = self.extractor.compute(references)
+        self._fallback_fingerprints.clear()
 
     def has_references(self) -> bool:
         return bool(self._gather_reference_images())
 
     def has_fingerprint(self) -> bool:
-        return self._fingerprint is not None
+        return self._fingerprint is not None or bool(self._fallback_fingerprints)
 
     # Cleanup -----------------------------------------------------------
     def cleanup_assets(self) -> None:
@@ -119,6 +121,7 @@ class StyleTransferSession:
         ):
             # The GUI writes user uploads into temp folders; clean them when exiting.
             self._remove_files(directory.iterdir())
+        self._fallback_fingerprints.clear()
 
     @staticmethod
     def _remove_files(paths: Iterable[Path]) -> None:
