@@ -86,6 +86,7 @@ class FasterWhisperTranscriber:
         download_root: Optional[Path] = None,
     ) -> None:
         self.model_size = model_size
+        # Auto-pick sensible defaults so beginners rarely have to think about acceleration flags.
         self.device, self.compute_type = suggest_device_settings(device, compute_type)
         self.download_root = download_root
         self._model: Optional[Any] = None
@@ -115,6 +116,7 @@ class FasterWhisperTranscriber:
                 self._model = WhisperModel(self.model_size, **kwargs)
             except ValueError as exc:  # pragma: no cover - fallback exercised in tests
                 if kwargs.get("compute_type") != "int8":
+                    # Some combinations (e.g. Metal + float16) may not be supported, so fall back to a safe CPU mode.
                     kwargs["compute_type"] = "int8"
                     kwargs["device"] = "cpu"
                     self.compute_type = "int8"
@@ -175,6 +177,7 @@ class FasterWhisperTranscriber:
         for segment in segments:
             text = getattr(segment, "text", "")
             if text:
+                # Stitch sentence fragments together because we ask Whisper for streaming-style segments.
                 text_parts.append(text.strip())
 
         text = " ".join(part for part in text_parts if part).strip()

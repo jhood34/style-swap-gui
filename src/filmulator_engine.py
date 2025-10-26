@@ -43,6 +43,7 @@ class FilmulatorEngine:
         self.fingerprint = fingerprint
 
     def apply(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        # Work in a predictable RGB space so every subsequent operation behaves consistently.
         rgb = image.convert("RGB")
         array = np.asarray(rgb)
         resolved = self._resolve_params(params)
@@ -61,6 +62,7 @@ class FilmulatorEngine:
     def _resolve_params(params: FilmulatorParameters) -> FilmulatorParameters:
         """Convert [-100, 100] control values into runtime-friendly numbers."""
 
+        # Copy the dataclass so GUI-facing values stay untouched.
         resolved = replace(params)
         resolved.strength = FilmulatorEngine._map_control(params.strength, base=1.0, minimum=0.0, maximum=2.0)
         resolved.saturation_scale = FilmulatorEngine._map_control(
@@ -105,6 +107,7 @@ class FilmulatorEngine:
         ref_mean = self.fingerprint.color_mean
         ref_std = self.fingerprint.color_std * max(params.saturation_scale, 0.0)
 
+        # Classic color transfer: normalize the image, inject the reference stats, then shift brightness.
         matched = (target - target_mean) * (ref_std + self.eps) / (target_std + self.eps) + ref_mean
         matched = np.clip(matched + params.brightness_shift, 0.0, 1.0)
         return target, matched
@@ -120,6 +123,7 @@ class FilmulatorEngine:
             primary = base
         else:
             delta = matched - base
+            # Blend towards the reference stats; >1 exaggerates the delta for dramatic looks.
             primary = base + delta * strength
         return Image.fromarray(np.clip(primary * 255.0, 0.0, 255.0).astype(np.uint8))
 
@@ -157,6 +161,7 @@ class FilmulatorEngine:
             luminance = (luminance - 0.5) * (1.0 + params.contrast) + 0.5
 
         luminance = np.clip(luminance, 0.0, 1.0)
+        # Re-scale RGB channels so their combined luminance matches the edited curve.
         ratio = luminance / (0.299 * arr[..., 0] + 0.587 * arr[..., 1] + 0.114 * arr[..., 2] + self.eps)
         arr = np.clip(arr * ratio[..., None], 0.0, 1.0)
 
@@ -165,6 +170,7 @@ class FilmulatorEngine:
 
             blurred = gaussian_filter(arr, sigma=(0, 1.5, 0))
             highpass = arr - blurred
+            # Clarity adds/subtracts the high-pass layer to emphasize mid-tone detail.
             arr = np.clip(arr + params.clarity * highpass, 0.0, 1.0)
 
         return Image.fromarray((arr * 255.0).astype(np.uint8))
@@ -175,9 +181,11 @@ class FilmulatorEngine:
         arr = np.asarray(image).astype(np.float32) / 255.0
         shift = params.color_temperature
         if shift > 0:
+            # Warmth: push red up and slightly suppress blue to mimic amber light.
             arr[..., 0] *= 1 + shift
             arr[..., 2] *= 1 - min(shift, 1.0)
         else:
+            # Cooling is the inverse: reduce red, boost blue.
             arr[..., 0] *= 1 + shift
             arr[..., 2] *= 1 - shift
         arr = np.clip(arr, 0.0, 1.0)
@@ -189,6 +197,7 @@ class FilmulatorEngine:
         arr = np.asarray(image).astype(np.float32) / 255.0
         rng = np.random.default_rng()
         noise = rng.normal(0.0, params.grain_strength * 0.05, size=arr.shape)
+        # Adding noise directly in linear space keeps grain intensity consistent across tones.
         arr = np.clip(arr + noise, 0.0, 1.0)
         return Image.fromarray((arr * 255.0).astype(np.uint8))
 

@@ -44,6 +44,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
         if key not in llm_result:
             return
         value = float(llm_result[key])
+        # Each delta nudges the current slider value, so clamp after the addition.
         setattr(params, attr, _clamp_control(getattr(params, attr) + value))
         changed = True
 
@@ -77,6 +78,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
         changed = True
 
     if "reset" in llm_result and llm_result["reset"]:
+        # Reset is easiest by overwriting the dataclass with a fresh default instance.
         params.__dict__.update(FilmulatorParameters().__dict__)
         changed = True
 
@@ -96,4 +98,5 @@ def _clamp_parameters(params: FilmulatorParameters) -> None:
 
 
 def _clamp_control(value: float) -> float:
+    # Keep every control inside the GUI's [-100, 100] safety band.
     return max(CONTROL_MIN, min(CONTROL_MAX, float(value)))

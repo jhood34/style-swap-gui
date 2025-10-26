@@ -59,6 +59,7 @@ class FeedbackTask(QRunnable):
 
     def run(self) -> None:  # pragma: no cover - executed in worker thread
         try:
+            # Run the expensive feedback + restyle logic away from the UI thread.
             changed, messages = self.session.apply_feedback(self.feedback, self.input_path)
         except Exception as exc:
             self.signals.finished.emit(False, [str(exc)])
@@ -86,6 +87,7 @@ class ImagePreviewWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self._main_window = main_window
         self.target_label = label
+        # Prevent recursive textChanged calls while syncing both editors.
         self._sync_guard = False
 
         layout = QVBoxLayout()
@@ -158,6 +160,7 @@ class ImagePreviewWindow(QWidget):
             return
         self._sync_guard = True
         text = self.prompt_edit.toPlainText()
+        # Block signals so we do not trigger another sync round-trip.
         self._main_window.feedback_edit.blockSignals(True)
         self._main_window.feedback_edit.setPlainText(text)
         self._main_window.feedback_edit.blockSignals(False)
@@ -684,6 +687,7 @@ class StyleTransferWindow(QMainWindow):
         self._start_processing_visuals()
 
         task = FeedbackTask(self.session, feedback, input_path)
+        # Route the worker's result back onto the GUI thread via Qt signals.
         task.signals.finished.connect(
             lambda success, messages, fb=feedback, path=input_path, org=origin: self._on_feedback_finished(
                 fb, path, org, success, messages
@@ -727,6 +731,7 @@ class StyleTransferWindow(QMainWindow):
             self._styled_opacity_effect = QGraphicsOpacityEffect(self.styled_label)
             self.styled_label.setGraphicsEffect(self._styled_opacity_effect)
         if self._active_feedback_jobs == 0:
+            # Dim the preview and disable the button so the user sees work in progress.
             self._styled_opacity_effect.setOpacity(0.4)
             self.styled_label.repaint()
             self.apply_button.setEnabled(False)
@@ -803,6 +808,7 @@ class StyleTransferWindow(QMainWindow):
         if not self.voice_toggle.isChecked():
             return
         self._voice_listen_timer.stop()
+        # A small delay lets the UI surface feedback before the mic resumes listening.
         self._voice_listen_timer.start(delay_ms)
 
     def _set_voice_listening(self) -> None:
@@ -946,6 +952,7 @@ class VoiceFeedbackController(QObject):
         if self._listener and self._listener.is_running:
             return True
         listener = VoiceCommandListener(
+            # Feed every transcript/error back into Qt signals so the GUI can react.
             transcriber=self._transcriber,
             on_transcript=self._handle_transcript,
             on_error=self._handle_error,
@@ -973,6 +980,7 @@ class VoiceFeedbackController(QObject):
     # ------------------------------------------------------------------
     def _handle_transcript(self, transcript: str) -> None:
         self.state_changed.emit("processing")
+        # Mirror transcripts in the terminal to help debug voice interactions.
         print(f"[voice] transcript: {transcript}")  # Debug visibility in terminal
         self.transcript_ready.emit(transcript)
 

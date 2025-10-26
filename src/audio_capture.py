@@ -131,6 +131,7 @@ class VoiceCommandListener:
             input_rate = self.config.sample_rate
 
         self._input_rate = int(input_rate)
+        # Figure out how many samples land in each VAD frame at the *input* rate.
         self._input_frame_samples = max(1, int(self._input_rate * self.config.frame_ms / 1000))
 
         stream_kwargs = {
@@ -196,6 +197,7 @@ class VoiceCommandListener:
             chunk = chunk.mean(axis=-1)
         chunk = np.copy(chunk)
         if self._input_rate and self._input_rate != self.config.sample_rate:
+            # Resample on the fly so the downstream VAD/transcriber sees the target rate.
             chunk = self._resample(chunk, self._input_rate, self.config.sample_rate)
         self._queue.put(chunk)
 
@@ -234,6 +236,7 @@ class VoiceCommandListener:
         frame_time = timestamp
         chunk_included = False
 
+        # Feed fixed-size frames into WebRTC VAD so it can flag speech/silence.
         while self._int16_buffer.size >= frame_len:
             frame = self._int16_buffer[:frame_len]
             self._int16_buffer = self._int16_buffer[frame_len:]
@@ -271,6 +274,7 @@ class VoiceCommandListener:
         self._utter_start = timestamp
         self._last_voice_time = timestamp
         self._silence_frames = 0
+        # Seed the capture with the buffered pre-roll so we keep the word leading edge.
         self._float_segments = list(self._pre_roll)
         self._pre_roll.clear()
         if self._debug:
@@ -307,6 +311,7 @@ class VoiceCommandListener:
         total_samples = sum(seg.shape[0] for seg in self._float_segments)
         if total_samples <= self._max_command_samples:
             return
+        # Keep the tail of the utterance so long commands do not starve memory.
         concatenated = np.concatenate(self._float_segments)
         concatenated = concatenated[-self._max_command_samples :]
         self._float_segments = [concatenated]
@@ -367,6 +372,7 @@ class VoiceCommandListener:
             self._reset_state()
             return
 
+        # Ignore transcripts that are only punctuation/breathing sounds.
         clean = "".join(ch for ch in transcript if ch.isalnum() or ch.isspace()).strip()
         if clean:
             self.on_transcript(transcript)

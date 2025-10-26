@@ -106,6 +106,7 @@ def _call_ollama(prompt: str, model: str) -> Optional[str]:
         if _HTTP_SESSION is None:  # pragma: no cover - simple lazy init
             _HTTP_SESSION = requests.Session()
         try:
+            # Prefer the local HTTP API when requests is available—it avoids spawning a process per call.
             response = _HTTP_SESSION.post(
                 "http://localhost:11434/api/generate",
                 json={
@@ -126,6 +127,7 @@ def _call_ollama(prompt: str, model: str) -> Optional[str]:
     env = os.environ.copy()
     env.setdefault("OLLAMA_KEEP_ALIVE", "-1")
     try:
+        # Fallback: shell out to `ollama run`, piping the prompt via stdin.
         result = subprocess.run(
             ["ollama", "run", model],
             input=prompt,
@@ -147,6 +149,7 @@ def _extract_actions(output: str) -> Optional[Dict[str, Any]]:
         return None
 
     snippet = output[start : end + 1]
+    # LLMs sometimes wrap valid JSON in markdown or comments—strip them eagerly.
     snippet = snippet.replace("```json", "").replace("```", "")
     snippet = "\n".join(line for line in snippet.splitlines() if not line.strip().startswith("//"))
     snippet = re.sub(r"//.*", "", snippet)

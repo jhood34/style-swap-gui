@@ -64,6 +64,7 @@ class StyleTransferSession:
 
     def fingerprint(self) -> StyleFingerprint:
         if self._fingerprint is None:
+            # Cache the expensive CLIP fingerprint so multiple images reuse it.
             references = self._gather_reference_images()
             if not references:
                 raise ValueError(f"No reference images found in {self.config.reference_dir}")
@@ -78,6 +79,7 @@ class StyleTransferSession:
         try:
             fingerprint = self.fingerprint()
         except ValueError:
+            # No references yet? Return a copy so the UI still shows something.
             output_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy(input_path, output_path)
             return output_path
@@ -113,6 +115,7 @@ class StyleTransferSession:
             self.config.input_dir,
             self.output_dir,
         ):
+            # The GUI writes user uploads into temp folders; clean them when exiting.
             self._remove_files(directory.iterdir())
 
     @staticmethod

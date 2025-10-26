@@ -54,11 +54,13 @@ class FingerprintExtractor:
         cache_dir: str | Path | None = None,
         prefer_offline_cache: bool = True,
     ) -> None:
+        # Prefer the caller-provided device, otherwise auto-detect CUDA/CPU.
         self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
         self.cache_dir = Path(cache_dir).expanduser() if cache_dir else None
         self._local_repo_path: Path | None = None
 
         if prefer_offline_cache:
+            # Grab the weight snapshot once so everything afterwards works offline.
             self._local_repo_path = self._ensure_weights_available()
 
         model_name = "ViT-B-32"
@@ -131,6 +133,7 @@ class FingerprintExtractor:
         with torch.no_grad():
             tensor = self.preprocess(image).unsqueeze(0).to(self.device)
             embedding = self.model.encode_image(tensor)
+            # Normalize the vector so cosine distance matches CLIP expectations.
             embedding = embedding / embedding.norm(dim=-1, keepdim=True)
             return embedding.cpu().numpy()[0]
 
@@ -161,6 +164,8 @@ class FingerprintExtractor:
         color_std_stack = np.stack(color_stds, axis=0)
 
         return StyleFingerprint(
+            # Aggregate each statistic across the reference set so a single fingerprint
+            # captures the "average" embedding plus its variation per dimension.
             clip_mean=clip_stack.mean(axis=0),
             clip_std=clip_stack.std(axis=0),
             color_mean=color_mean_stack.mean(axis=0),
