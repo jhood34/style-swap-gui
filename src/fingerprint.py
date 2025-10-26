@@ -145,6 +145,7 @@ class FingerprintExtractor:
         return mean, std
 
     def compute(self, images: Iterable[Path]) -> StyleFingerprint:
+        """Embed each image, compute RGB moments, and return dataset-level averages."""
         embeddings: List[np.ndarray] = []
         color_means: List[np.ndarray] = []
         color_stds: List[np.ndarray] = []

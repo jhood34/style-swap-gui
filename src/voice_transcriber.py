@@ -94,6 +94,7 @@ class FasterWhisperTranscriber:
 
     # ------------------------------------------------------------------
     def _ensure_model(self) -> Any:
+        """Lazy-load WhisperModel once, retrying with a CPU/INT8 fallback when necessary."""
         if self._model is not None:
             return self._model
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from typing import Tuple
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageEnhance
 
 from .fingerprint import StyleFingerprint
 
@@ -49,7 +49,8 @@ class FilmulatorEngine:
         resolved = self._resolve_params(params)
         base, matched = self._match_color_statistics(array, resolved)
         blended = self._blend(base, matched, resolved)
-        toned = self._apply_tone_controls(blended, resolved)
+        saturated = self._apply_saturation(blended, resolved)
+        toned = self._apply_tone_controls(saturated, resolved)
         coloured = self._apply_color_temperature(toned, resolved)
         if resolved.grayscale:
             coloured = ImageOps.grayscale(coloured).convert("RGB")
@@ -105,7 +106,7 @@ class FilmulatorEngine:
         target_std = target.std(axis=(0, 1))
 
         ref_mean = self.fingerprint.color_mean
-        ref_std = self.fingerprint.color_std * max(params.saturation_scale, 0.0)
+        ref_std = self.fingerprint.color_std
 
         # Classic color transfer: normalize the image, inject the reference stats, then shift brightness.
         matched = (target - target_mean) * (ref_std + self.eps) / (target_std + self.eps) + ref_mean
@@ -126,6 +127,13 @@ class FilmulatorEngine:
             # Blend towards the reference stats; >1 exaggerates the delta for dramatic looks.
             primary = base + delta * strength
         return Image.fromarray(np.clip(primary * 255.0, 0.0, 255.0).astype(np.uint8))
+
+    def _apply_saturation(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
+        factor = float(max(params.saturation_scale, 0.0))
+        if abs(factor - 1.0) < 1e-3:
+            return image
+        enhancer = ImageEnhance.Color(image)
+        return enhancer.enhance(factor)
 
     def _apply_tone_controls(self, image: Image.Image, params: FilmulatorParameters) -> Image.Image:
         if (

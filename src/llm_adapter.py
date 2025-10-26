@@ -31,8 +31,9 @@ def parse_feedback_with_llm(feedback: str, model: str = DEFAULT_MODEL) -> Option
 
     prompt = textwrap.dedent(
         f"""
-        You are an expert photo editing assistant. Always respond with a SINGLE JSON object that
-        fits the following schema. Do not include prose, markdown, or comments.
+        You are an expert photo editing assistant controlling a Filmulator-inspired engine.
+        Always respond with a SINGLE JSON object that fits the schema below. Do not include prose,
+        markdown, or comments—provide JSON only.
 
         Schema:
         {{
@@ -64,26 +65,31 @@ def parse_feedback_with_llm(feedback: str, model: str = DEFAULT_MODEL) -> Option
         }}
 
         Rules:
-        - Always include at least one action.
-        - Use "respond" when you want to talk to the user.
-        - Use "update_parameters" when you want to change image settings.
-        - Every numeric parameter uses a unified [-100, 100] scale where 0 = neutral/current value, +100 = maximum increase, -100 = maximum decrease.
-        - If you cannot act, respond with an empty parameter update and a message explaining why.
+        1. Every numeric field uses a unified [-100, 100] control scale (0 = keep current value,
+           +100 = maximum increase, -100 = maximum decrease). Never exceed this range.
+        2. Only include fields you intend to change; omit others.
+        3. If the user mentions noir, monochrome, black and white, WW1/WWII footage, vintage film,
+           or any phrasing that clearly implies a grayscale image, set "grayscale": true unless they
+           explicitly forbid it.
+        4. If the user references warmth/coolness, map that to "temperature_delta".
+        5. Grain-strength is an absolute target on the same [-100, 100] scale; do not treat it as a delta.
+        6. Use "respond" whenever you need to acknowledge instructions, clarify limitations,
+           or confirm the applied edits.
+        7. If you cannot act, return an empty parameter object plus a helpful response message.
 
-        Parameters (all on the [-100, 100] scale):
-        - strength_delta: adjusts how strongly the reference style is blended.
-        - saturation_delta: negative desaturates, positive boosts color.
-        - brightness_delta: negative darkens, positive brightens.
-        - shadow_delta: negative deepens shadows, positive lifts them.
-        - highlight_delta: negative brightens highlights, positive compresses them.
-        - contrast_delta: negative flattens, positive increases contrast.
-        - clarity_delta: negative softens, positive adds midtone detail.
-        - temperature_delta: negative cools, positive warms.
-        - grain_strength: absolute target level on the same scale (0 = none, 100 = maximum grain).
-        - grayscale: boolean to enable or disable monochrome.
-        - rotation: integer degrees to rotate relative to the current orientation.
-        - flip_horizontal / flip_vertical: booleans to set mirror state.
-        - reset: true to restore all parameters to their defaults.
+        Parameter reference (effect on the engine):
+        - strength_delta: blend amount between the reference fingerprint and the original photo.
+        - saturation_delta: color intensity. Positive pushes richer colors; negative desaturates.
+        - brightness_delta: overall exposure shift. Positive brightens, negative darkens.
+        - shadow_delta: lifts or deepens dark regions.
+        - highlight_delta: compresses or boosts bright regions.
+        - contrast_delta: increases or decreases global contrast.
+        - clarity_delta: midtone detail/sharpness (positive adds micro-contrast).
+        - temperature_delta: warms (positive) or cools (negative) white balance.
+        - grain_strength: absolute grain amount (0 = none, 100 = heavy film grain).
+        - grayscale: true creates a monochrome render, false keeps color.
+        - rotation / flip_horizontal / flip_vertical: geometric adjustments relative to current orientation.
+        - reset: true reverts every parameter to its default.
 
         Input: "{feedback}"
         JSON:
@@ -101,6 +107,7 @@ _HTTP_SESSION: Optional["requests.Session"] = None
 
 
 def _call_ollama(prompt: str, model: str) -> Optional[str]:
+    """Send the prompt to Ollama via HTTP when possible, otherwise fall back to the CLI."""
     if requests is not None and os.environ.get("OLLAMA_DISABLE_HTTP", "0") != "1":
         global _HTTP_SESSION
         if _HTTP_SESSION is None:  # pragma: no cover - simple lazy init
@@ -143,6 +150,7 @@ def _call_ollama(prompt: str, model: str) -> Optional[str]:
 
 
 def _extract_actions(output: str) -> Optional[Dict[str, Any]]:
+    """Carve the JSON out of the model's response and collapse the actions list into a flat dict."""
     start = output.find("{")
     end = output.rfind("}")
     if start == -1 or end == -1:
@@ -187,6 +195,7 @@ def _extract_actions(output: str) -> Optional[Dict[str, Any]]:
 
 
 def _normalize_parameter_update(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter unknown keys and coerce each value into the expected Python type."""
     allowed = {
         "strength_delta",
         "saturation_delta",

@@ -15,6 +15,7 @@ def apply_style(
     fingerprint: StyleFingerprint,
     params: FilmulatorParameters | None = None,
 ) -> Image.Image:
+    """Apply the Filmulator pipeline to an in-memory PIL image."""
     engine = FilmulatorEngine(fingerprint)
     return engine.apply(image, params or FilmulatorParameters())
 
@@ -25,9 +26,9 @@ def apply_style_to_path(
     fingerprint: StyleFingerprint,
     params: FilmulatorParameters | None = None,
 ) -> Path:
+    """Open the input image from disk, style it, and save the result to output_path."""
     with Image.open(input_path) as img:
         styled = apply_style(img, fingerprint, params=params)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         styled.save(output_path)
     return output_path
-

@@ -202,6 +202,7 @@ class VoiceCommandListener:
         self._queue.put(chunk)
 
     def _process_loop(self) -> None:
+        """Continuously drain the audio queue and feed frames into the VAD pipeline."""
         while self._running:
             try:
                 chunk = self._queue.get(timeout=0.1)
@@ -214,6 +215,7 @@ class VoiceCommandListener:
         self._handle_chunk(None, self._now())
 
     def _handle_chunk(self, chunk: Optional[np.ndarray], timestamp: float) -> None:
+        """Accumulate audio into fixed frames, detect speech boundaries, and trigger transcription."""
         if chunk is None:
             if self._speaking and self._debug:
                 print("[voice-debug] forcing flush at stream end")
@@ -317,6 +319,7 @@ class VoiceCommandListener:
         self._float_segments = [concatenated]
 
     def _flush_buffer(self, force: bool = False) -> None:
+        """Send the buffered utterance to the transcriber once silence or duration limits are hit."""
         if not self._float_segments:
             self._reset_state()
             return

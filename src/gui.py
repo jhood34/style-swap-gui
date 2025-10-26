@@ -255,7 +255,7 @@ class StyleTransferWindow(QMainWindow):
             "grain_strength": (-100, 100, 1.0, 0.0),
         }
         self.slider_labels = {
-            "saturation_scale": "Saturatiom",
+            "saturation_scale": "Saturation",
             "brightness_shift": "Exposure",
             "shadow_lift": "Shadows",
             "highlight_compress": "Highlights",
@@ -665,6 +665,7 @@ class StyleTransferWindow(QMainWindow):
         self.voice_controller.stop()
 
     def _queue_feedback_application(self, feedback: str, origin: str) -> None:
+        """Validate the request, then run feedback parsing/restyling in a worker thread."""
         feedback = feedback.strip()
         if not feedback:
             if origin == "manual":
@@ -727,6 +728,7 @@ class StyleTransferWindow(QMainWindow):
                 )
 
     def _start_processing_visuals(self) -> None:
+        """Dim the styled preview and disable controls while a worker is running."""
         if self._styled_opacity_effect is None:
             self._styled_opacity_effect = QGraphicsOpacityEffect(self.styled_label)
             self.styled_label.setGraphicsEffect(self._styled_opacity_effect)
@@ -738,6 +740,7 @@ class StyleTransferWindow(QMainWindow):
         self._active_feedback_jobs += 1
 
     def _stop_processing_visuals(self) -> None:
+        """Re-enable the preview once all queued jobs finish."""
         if self._active_feedback_jobs == 0:
             return
         self._active_feedback_jobs -= 1

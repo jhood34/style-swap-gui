@@ -56,6 +56,7 @@ class StyleTransferAgent:
         return paths
 
     def _process(self, fingerprint: StyleFingerprint, params: FilmulatorParameters) -> List[Path]:
+        """Apply the current parameter set to every input file and return the outputs."""
         inputs = self._gather_inputs()
         outputs: List[Path] = []
         for path in inputs:
@@ -75,6 +76,7 @@ class StyleTransferAgent:
         )
 
     def run(self) -> List[Path]:
+        """Perform one styling pass and optionally enter an interactive refinement loop."""
         fingerprint = self._fingerprint()
         params = FilmulatorParameters()
         outputs = self._process(fingerprint, params)

@@ -13,7 +13,14 @@ CONTROL_MAX = 100.0
 
 
 def interpret_feedback(feedback: str, params: FilmulatorParameters) -> Tuple[FilmulatorParameters, bool, List[str]]:
-    """Delegate feedback parsing to the LLM and apply returned adjustments."""
+    """Translate free-form text into concrete parameter adjustments.
+
+    Steps:
+    1. Ask the LLM to convert the feedback into a JSON payload.
+    2. Copy the current FilmulatorParameters so we only mutate the clone.
+    3. Apply the deltas (or absolute values) returned by the LLM.
+    4. Clamp every value so it remains within the GUI's [-100, 100] safety range.
+    """
 
     if not feedback or not feedback.strip():
         return params, False, []
@@ -37,6 +44,8 @@ def interpret_feedback(feedback: str, params: FilmulatorParameters) -> Tuple[Fil
 
 
 def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) -> bool:
+    """Merge the LLM's structured response into the Filmulator parameters."""
+
     changed = False
 
     def _apply_delta(attr: str, key: str) -> None:
@@ -44,7 +53,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
         if key not in llm_result:
             return
         value = float(llm_result[key])
-        # Each delta nudges the current slider value, so clamp after the addition.
+        # Each delta nudges the current slider value instead of overwriting it.
         setattr(params, attr, _clamp_control(getattr(params, attr) + value))
         changed = True
 
@@ -58,6 +67,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
     _apply_delta("color_temperature", "temperature_delta")
 
     if "grain_strength" in llm_result:
+        # Grain is treated as an absolute target level, not a delta.
         params.grain_strength = _clamp_control(float(llm_result["grain_strength"]))
         changed = True
 
@@ -78,7 +88,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
         changed = True
 
     if "reset" in llm_result and llm_result["reset"]:
-        # Reset is easiest by overwriting the dataclass with a fresh default instance.
+        # Reset by copying the defaults from a brand-new dataclass instance.
         params.__dict__.update(FilmulatorParameters().__dict__)
         changed = True
 
@@ -86,6 +96,7 @@ def _apply_llm_result(params: FilmulatorParameters, llm_result: Dict[str, Any]) 
 
 
 def _clamp_parameters(params: FilmulatorParameters) -> None:
+    """Force every control back into the safe [-100, 100] band."""
     params.strength = _clamp_control(params.strength)
     params.saturation_scale = _clamp_control(params.saturation_scale)
     params.brightness_shift = _clamp_control(params.brightness_shift)

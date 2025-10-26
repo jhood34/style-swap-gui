@@ -87,12 +87,14 @@ class StyleTransferSession:
         return output_path
 
     def stylise_all(self) -> List[StylisedImage]:
+        """Run stylise_image for every file currently on disk."""
         results: List[StylisedImage] = []
         for path in self.list_inputs():
             results.append(StylisedImage(path, self.stylise_image(path)))
         return results
 
     def reset_parameters(self) -> None:
+        """Forget all per-image adjustments so future renders use neutral sliders."""
         for key in list(self._image_params.keys()):
             self._image_params[key] = FilmulatorParameters()
 
@@ -128,6 +130,7 @@ class StyleTransferSession:
                 continue
 
     def apply_feedback(self, feedback: str, input_path: Path) -> tuple[bool, list[str]]:
+        """Delegate natural-language feedback to the interpreter and persist the change."""
         params = self._params_for(input_path)
         updated, changed, messages = interpret_feedback(feedback, params)
         if changed:
