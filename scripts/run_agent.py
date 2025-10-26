@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.agent import AgentConfig, StyleTransferAgent
+from src.utils.filesystem import cleanup_files
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,19 +64,7 @@ def main() -> None:
         for path in outputs:
             print(f"Styled image written to {path}")
     finally:
-        _cleanup_directories((args.references, args.inputs, args.outputs))
-
-
-def _cleanup_directories(directories: tuple[Path, ...]) -> None:
-    for directory in directories:
-        if not directory.exists():
-            continue
-        for path in directory.iterdir():
-            try:
-                if path.is_file() or path.is_symlink():
-                    path.unlink(missing_ok=True)
-            except Exception:
-                continue
+        cleanup_files((args.references, args.inputs, args.outputs))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from .filmulator_engine import FilmulatorParameters
 from .transformer import apply_style_to_path
 from .interaction import interpret_feedback
 from .voice_transcriber import FasterWhisperTranscriber, TranscriptionError
+from .utils.filesystem import list_images
 
 
 @dataclass
@@ -30,12 +31,7 @@ class StyleTransferAgent:
         self._voice_transcriber: FasterWhisperTranscriber | None = None
 
     def _gather_reference_images(self) -> List[Path]:
-        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
-        paths = sorted(
-            path
-            for ext in patterns
-            for path in self.config.reference_dir.glob(ext)
-        )
+        paths = list_images(self.config.reference_dir)
         if not paths:
             raise ValueError(f"No reference images found in {self.config.reference_dir}")
         return paths
@@ -45,12 +41,7 @@ class StyleTransferAgent:
         return self.extractor.compute(references)
 
     def _gather_inputs(self) -> List[Path]:
-        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
-        paths = sorted(
-            path
-            for ext in patterns
-            for path in self.config.input_dir.glob(ext)
-        )
+        paths = list_images(self.config.input_dir)
         if not paths:
             raise ValueError(f"No input images found in {self.config.input_dir}")
         return paths

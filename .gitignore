@@ -1,0 +1,6 @@
+# Bytecode caches
+__pycache__/
+*.pyc
+
+# Voice-mode debug clips
+outputs/voice_debug/

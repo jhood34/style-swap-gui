@@ -40,6 +40,7 @@ def _color_to_rgba(color: QColor, alpha: int | None = None) -> str:
 from .session import StyleTransferSession
 from .audio_capture import AudioCaptureError, VoiceCommandListener, VoiceCommandConfig
 from .voice_transcriber import FasterWhisperTranscriber
+from .utils.filesystem import copy_images
 
 
 class FeedbackSignals(QObject):
@@ -838,15 +839,7 @@ class StyleTransferWindow(QMainWindow):
             QMessageBox.information(self, "Reset", "Select an image to reset its controls.")
             return
         input_path, _ = paths
-        self.session.set_parameter(input_path, "strength", 0.0)
-        self.session.set_parameter(input_path, "saturation_scale", 0.0)
-        self.session.set_parameter(input_path, "brightness_shift", 0.0)
-        self.session.set_parameter(input_path, "shadow_lift", 0.0)
-        self.session.set_parameter(input_path, "highlight_compress", 0.0)
-        self.session.set_parameter(input_path, "contrast", 0.0)
-        self.session.set_parameter(input_path, "clarity", 0.0)
-        self.session.set_parameter(input_path, "color_temperature", 0.0)
-        self.session.set_parameter(input_path, "grain_strength", 0.0)
+        self.session.reset_parameters_for(input_path)
         self._sync_sliders()
         self._schedule_restylise(input_path, immediate=True)
 
@@ -876,10 +869,7 @@ class StyleTransferWindow(QMainWindow):
         files = self._choose_files("Select reference images")
         if not files:
             return
-        for src in files:
-            dst = self.session.config.reference_dir / src.name
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, dst)
+        copy_images(files, self.session.config.reference_dir)
         try:
             self.session.refresh_fingerprint()
             self.restylise_all()
@@ -892,10 +882,7 @@ class StyleTransferWindow(QMainWindow):
         files = self._choose_files("Select input images")
         if not files:
             return
-        for src in files:
-            dst = self.session.config.input_dir / src.name
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(src, dst)
+        copy_images(files, self.session.config.input_dir)
         self._load_inputs()
         self.restylise_all(initial=True)
 

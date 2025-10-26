@@ -54,7 +54,7 @@ class VoiceCommandConfig:
 
 
 class VoiceCommandListener:
-    """Capture microphone audio, detect phrases with VAD, and emit transcripts."""
+    """Capture audio, detect speech segments with VAD, and emit transcripts."""
 
     def __init__(
         self,
@@ -89,13 +89,16 @@ class VoiceCommandListener:
         self._worker: Optional[threading.Thread] = None
         self._stream = None
 
+        # Frame length (in samples) the VAD expects at the target sample rate.
         self._frame_samples = int(self.config.sample_rate * self.config.frame_ms / 1000)
         if self._frame_samples <= 0:
             raise AudioCaptureError("VoiceCommandConfig.frame_ms must be positive.")
         self._frame_duration = self.config.frame_ms / 1000.0
+        # How many back-to-back silent frames we need before flushing.
         self._silence_frames_required = max(
             1, int((self.config.silence_duration * 1000) / self.config.frame_ms)
         )
+        # Pre-roll buffers capture a short window of context before speech starts.
         self._pre_roll_frame_limit = max(
             1, int((self.config.pre_roll_seconds * 1000) / self.config.frame_ms)
         )
@@ -103,8 +106,11 @@ class VoiceCommandListener:
         self._max_command_samples = int(self.config.max_utterance_seconds * self.config.sample_rate)
 
         self._pre_roll: Deque[np.ndarray] = deque()
+        # Float segments retain full fidelity for transcription once VAD confirms speech.
         self._float_segments: list[np.ndarray] = []
+        # Int16 buffer feeds WebRTC VAD, which expects PCM16 audio.
         self._int16_buffer = np.zeros(0, dtype=np.int16)
+        # State machine bookkeeping: detects when the user is currently speaking.
         self._speaking = False
         self._utter_start: float | None = None
         self._last_voice_time: float | None = None
@@ -163,8 +169,10 @@ class VoiceCommandListener:
         self._running = True
 
         if hasattr(self._stream, "start"):
+            # Start pushing audio callbacks from the audio backend.
             self._stream.start()
 
+        # Background thread drains the queue so VAD/transcription stay off the UI thread.
         self._worker = threading.Thread(target=self._process_loop, daemon=True)
         self._worker.start()
 
@@ -227,6 +235,7 @@ class VoiceCommandListener:
             chunk = chunk.mean(axis=-1)
         if chunk.size == 0:
             return
+        # Preserve the float32 copy for high-quality resynthesis when we emit a full utterance.
         chunk_copy = chunk.copy()
 
         self._append_pre_roll(chunk_copy)
@@ -284,7 +293,7 @@ class VoiceCommandListener:
 
     def _append_pre_roll(self, chunk: np.ndarray) -> None:
         self._pre_roll.append(chunk)
-        # temporary cap; precise trim happens later
+        # Keep pre-roll from growing unbounded while we wait for speech.
         if len(self._pre_roll) > self._pre_roll_frame_limit * 4:
             self._trim_pre_roll()
 

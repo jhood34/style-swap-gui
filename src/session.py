@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 from .agent import AgentConfig
 from .fingerprint import FingerprintExtractor, StyleFingerprint
 from .filmulator_engine import FilmulatorParameters
 from .interaction import interpret_feedback
 from .transformer import apply_style_to_path
+from .utils.filesystem import cleanup_files, list_images
 
 
 @dataclass
@@ -44,23 +45,13 @@ class StyleTransferSession:
 
     # ------------------------------------------------------------------
     def list_inputs(self) -> List[Path]:
-        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
-        paths = sorted(
-            path
-            for ext in patterns
-            for path in self.config.input_dir.glob(ext)
-        )
+        paths = list_images(self.config.input_dir)
         if not paths:
             raise ValueError(f"No input images found in {self.config.input_dir}")
         return paths
 
     def _gather_reference_images(self) -> list[Path]:
-        patterns = ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.JPG", "*.JPEG", "*.PNG", "*.BMP")
-        return sorted(
-            path
-            for ext in patterns
-            for path in self.config.reference_dir.glob(ext)
-        )
+        return list_images(self.config.reference_dir)
 
     def fingerprint(self) -> StyleFingerprint:
         if self._fingerprint is None:
@@ -99,6 +90,10 @@ class StyleTransferSession:
         for key in list(self._image_params.keys()):
             self._image_params[key] = FilmulatorParameters()
 
+    def reset_parameters_for(self, input_path: Path) -> None:
+        """Reset the parameters for a single image only."""
+        self._image_params[input_path] = FilmulatorParameters()
+
     def refresh_fingerprint(self) -> None:
         references = self._gather_reference_images()
         if not references:
@@ -114,23 +109,14 @@ class StyleTransferSession:
 
     # Cleanup -----------------------------------------------------------
     def cleanup_assets(self) -> None:
-        for directory in (
-            self.config.reference_dir,
-            self.config.input_dir,
-            self.output_dir,
-        ):
-            # The GUI writes user uploads into temp folders; clean them when exiting.
-            self._remove_files(directory.iterdir())
+        cleanup_files(
+            (
+                self.config.reference_dir,
+                self.config.input_dir,
+                self.output_dir,
+            )
+        )
         self._fallback_fingerprints.clear()
-
-    @staticmethod
-    def _remove_files(paths: Iterable[Path]) -> None:
-        for path in paths:
-            try:
-                if path.is_file() or path.is_symlink():
-                    path.unlink(missing_ok=True)
-            except Exception:
-                continue
 
     def apply_feedback(self, feedback: str, input_path: Path) -> tuple[bool, list[str]]:
         """Delegate natural-language feedback to the interpreter and persist the change."""
