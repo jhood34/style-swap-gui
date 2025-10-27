@@ -121,4 +121,4 @@ The suite covers the Filmulator engine, parameter mapping, GUI helpers (where pr
 - **LLM feedback ignored**: ensure the Ollama daemon is running (`ollama serve` or the default background service) and that the requested model (default `llama3.1:8b`) is already pulled.
 - **Voice mode errors**: confirm your microphone permissions allow access, then reinstall `sounddevice` with the appropriate backend (e.g., `pip install sounddevice==0.4.6`). The GUI shows toast-style warnings when audio capture fails.
 
-That’s it—you now have a GUI-only photo style transfer agent that anyone can run locally. Have fun experimenting with different reference looks! 
+Code generated utilising the SOTA coding-oritentated model GPT-5 Codex.
